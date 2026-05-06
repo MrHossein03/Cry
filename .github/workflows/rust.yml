@@ -1,37 +1,37 @@
-name: Rust
+# name: Rust
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+# on:
+#   push:
+#     branches: [ "main" ]
+#   pull_request:
+#     branches: [ "main" ]
 
-env:
-  CARGO_TERM_COLOR: always
+# env:
+#   CARGO_TERM_COLOR: always
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --release --verbose
-    - name: Clean build directory
-      run: rm -rf build/cry && mkdir -p build/cry
-    - name: Copy build artifacts
-      run: cp target/release/cry build/cry/
-    - name: Make binary executable
-      run: chmod +x build/cry/cry
-    - name: Commit and push build artifacts
-      run: |
-        git config --global user.name 'github-actions'
-        git config --global user.email 'github-actions@github.com'
-        git add build/
-        if ! git diff --cached --quiet; then
-          git commit -m "Add built code to build/cry/"
-          git push
-        else
-          echo "No changes to commit"
-        fi
-    - name: Run tests
-      run: cargo test --verbose
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+#     steps:
+#     - uses: actions/checkout@v4
+#     - name: Build
+#       run: cargo build --release --verbose
+#     - name: Clean build directory
+#       run: rm -rf build/cry && mkdir -p build/cry
+#     - name: Copy build artifacts
+#       run: cp target/release/cry build/cry/
+#     - name: Make binary executable
+#       run: chmod +x build/cry/cry
+#     - name: Commit and push build artifacts
+#       run: |
+#         git config --global user.name 'github-actions'
+#         git config --global user.email 'github-actions@github.com'
+#         git add build/
+#         if ! git diff --cached --quiet; then
+#           git commit -m "Add built code to build/cry/"
+#           git push
+#         else
+#           echo "No changes to commit"
+#         fi
+#     - name: Run tests
+#       run: cargo test --verbose

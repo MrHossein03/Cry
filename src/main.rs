@@ -11,7 +11,6 @@ mod crydna;
 mod error;
 mod header;
 mod kdf;
-#[cfg(unix)]
 mod ssh;
 
 use std::path::{Path, PathBuf};
@@ -116,7 +115,6 @@ enum Command {
     ///
     /// The public key to add to the server's authorized_keys is printed
     /// by `cry identity [--namespace NAME] --ssh`.
-    #[cfg(unix)]
     #[command(name = "ssh")]
     Ssh(ssh::SshArgs),
 }
@@ -392,18 +390,11 @@ fn main() {
         // ── Bench ─────────────────────────────────────────────────────────────
         Command::Bench(args) => bench::run_bench(args),
 
-        // ── SSH (Unix only) ───────────────────────────────────────────────────
-        #[cfg(unix)]
+        // ── SSH ───────────────────────────────────────────────────────────────────
         Command::Ssh(args) => {
             // Build namespace label for the banner.
             let ns_label = {
-                let mut s = format!("namespace={:?}", args.params.namespace);
-                if args.params.key_version > 0 {
-                    s.push_str(&format!("  v{}", args.params.key_version));
-                }
-                if let Some(ref sub) = args.params.sub_id {
-                    s.push_str(&format!("  sub={sub:?}"));
-                }
+                let s = format!("namespace={:?}", args.namespace);
                 s
             };
 
@@ -418,12 +409,16 @@ fn main() {
             );
             eprintln!(
                 "  \x1b[2m   cry identity -n {} --ssh\x1b[0m",
-                args.params.namespace
+                args.namespace
             );
             divider();
 
-            read_passphrase(args.params.pass_file.as_deref(), false)
-                .and_then(|p| ssh::run_ssh(args, &p))
+            if let Some(raw) = &args.passphrase {
+                let pass = Zeroizing::new(raw.as_bytes().to_vec());
+                ssh::run_ssh(args, &pass)
+            } else {
+                read_passphrase(None, false).and_then(|pass| ssh::run_ssh(args, &pass))
+            }
         }
     };
 

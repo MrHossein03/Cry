@@ -35,7 +35,7 @@ sha2 = "0.10"
 hmac = "0.12"
  
 # Ed25519 keypair generation (CryDNA deterministic identity)
-ed25519-dalek = { version = "=2.1.1", features = ["digest"] }
+ed25519-dalek = { version = "=2.1.1", features = ["digest", "rand_core"] }
  
 # Base64 encoding for public key export — pinned to <1.7 for Rust 1.75 compat
 base64ct = { version = "=1.6.0", features = ["alloc"] }
@@ -49,7 +49,10 @@ thiserror = "1"
  
 # Password prompt (no echo) — pinned to avoid edition2024 transitive deps
 rpassword = "=7.3.1"
- 
+
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+hex = "0.4"
+
 [dev-dependencies]
 tempfile = "=3.10.1"
  

@@ -251,6 +251,9 @@ pub fn run_ssh(args: SshArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), Cry
     if let Some(pid) = &agent.pid {
         ssh.env("SSH_AGENT_PID", pid);
     }
+    ssh.arg("-o")
+        .arg(format!("IdentityAgent={}", &agent.socket));
+    ssh.arg("-o").arg("IdentitiesOnly=yes");
 
     if let Some(port) = args.port {
         ssh.arg("-p").arg(port.to_string());

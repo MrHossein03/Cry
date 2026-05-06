@@ -13,6 +13,7 @@ use ssh_key::{
 };
 use zeroize::Zeroizing;
 
+use crate::crydna::Identity;
 use crate::error::CryError;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -73,24 +74,34 @@ pub fn keygen(args: &KeygenArgs, openssh_passphrase: Option<&[u8]>) -> Result<()
             ensure_writable(output.1.as_ref().unwrap(), args.force)?;
             if args.openssh {
                 ensure_writable(&openssh_path(&output.0), args.force)?;
+                ensure_writable(&openssh_pub_path(&output.0), args.force)?;
             }
             let sk = SigningKey::generate(&mut OsRng);
-            write_private_key(&output.0, &sk.to_bytes(), args.force)?;
+            let id = Identity { signing_key: sk };
+            id.write_private_key_hex_file(&output.0, args.force)?;
             write_public_key(
                 &output.1.unwrap(),
-                &sk.verifying_key().to_bytes(),
+                &id.verifying_key().to_bytes(),
                 args.force,
             )?;
             if args.openssh {
                 let passphrase = openssh_passphrase
                     .ok_or_else(|| CryError::InvalidFormat("missing OpenSSH passphrase".into()))?;
+                let ssh_priv_path = openssh_path(&output.0);
                 write_openssh_private_key(
-                    &openssh_path(&output.0),
-                    &sk,
+                    &ssh_priv_path,
+                    &id,
                     passphrase,
                     &args.comment,
                     args.force,
                 )?;
+                let auth_line = id.ssh_authorized_keys_line(&args.comment);
+                let ssh_pub_path = openssh_pub_path(&output.0);
+                std::fs::write(&ssh_pub_path, format!("{auth_line}\n"))?;
+                eprintln!("  algorithm: ed25519");
+                eprintln!("  ssh public: {}", ssh_pub_path.display());
+                eprintln!("  ssh private: {}", ssh_priv_path.display());
+                eprintln!("  authorized_keys: {auth_line}");
             }
         }
         KeyAlgorithm::Aes256Gcm => {
@@ -146,23 +157,33 @@ pub fn derive(
             ensure_writable(output.1.as_ref().unwrap(), args.force)?;
             if args.openssh {
                 ensure_writable(&openssh_path(&output.0), args.force)?;
+                ensure_writable(&openssh_pub_path(&output.0), args.force)?;
             }
             let mut seed = [0u8; 32];
             seed.copy_from_slice(&okm[..32]);
             let sk = SigningKey::from_bytes(&seed);
-            write_private_key(&output.0, &sk.to_bytes(), args.force)?;
-            let vk: VerifyingKey = sk.verifying_key();
+            let id = Identity { signing_key: sk };
+            id.write_private_key_hex_file(&output.0, args.force)?;
+            let vk: VerifyingKey = id.verifying_key();
             write_public_key(&output.1.unwrap(), &vk.to_bytes(), args.force)?;
             if args.openssh {
                 let ssh_pass = openssh_passphrase
                     .ok_or_else(|| CryError::InvalidFormat("missing OpenSSH passphrase".into()))?;
+                let ssh_priv_path = openssh_path(&output.0);
                 write_openssh_private_key(
-                    &openssh_path(&output.0),
-                    &sk,
+                    &ssh_priv_path,
+                    &id,
                     ssh_pass,
                     &args.comment,
                     args.force,
                 )?;
+                let auth_line = id.ssh_authorized_keys_line(&args.comment);
+                let ssh_pub_path = openssh_pub_path(&output.0);
+                std::fs::write(&ssh_pub_path, format!("{auth_line}\n"))?;
+                eprintln!("  algorithm: ed25519");
+                eprintln!("  ssh public: {}", ssh_pub_path.display());
+                eprintln!("  ssh private: {}", ssh_priv_path.display());
+                eprintln!("  authorized_keys: {auth_line}");
             }
         }
         KeyAlgorithm::Aes256Gcm => {
@@ -213,10 +234,13 @@ fn write_public_key(path: &Path, bytes: &[u8], force: bool) -> Result<(), CryErr
 fn openssh_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.openssh_id", path.display()))
 }
+fn openssh_pub_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.openssh_pub", path.display()))
+}
 
 fn write_openssh_private_key(
     path: &Path,
-    signing_key: &SigningKey,
+    identity: &Identity,
     passphrase: &[u8],
     comment: &str,
     force: bool,
@@ -224,16 +248,7 @@ fn write_openssh_private_key(
     ensure_writable(path, force)?;
     let passphrase_str = std::str::from_utf8(passphrase)
         .map_err(|_| CryError::InvalidFormat("OpenSSH passphrase must be valid UTF-8".into()))?;
-    let keypair = Ed25519Keypair::from_bytes(&signing_key.to_keypair_bytes())
-        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key build failed: {e}")))?;
-    let private = PrivateKey::new(KeypairData::Ed25519(keypair), comment)
-        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key build failed: {e}")))?;
-    let mut rng = rand::thread_rng();
-    let pem = private
-        .encrypt(&mut rng, passphrase_str)
-        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key encryption failed: {e}")))?
-        .to_openssh(SshLineEnding::LF)
-        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key encode failed: {e}")))?;
-    std::fs::write(path, pem.to_string())?;
+    let pem = identity.openssh_private_key(passphrase_str, comment)?;
+    std::fs::write(path, pem)?;
     Ok(())
 }

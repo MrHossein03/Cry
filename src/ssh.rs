@@ -154,7 +154,8 @@ fn run_ssh_unix(args: SshArgs, key_pem: &Zeroizing<String>) -> Result<(), CryErr
     // Point ssh at our ephemeral agent only. We do NOT pass -F /dev/null
     // because that suppresses known_hosts and other useful config.
     // We DO disable fallback auth methods so the outcome is unambiguous.
-    ssh.arg("-o").arg(format!("IdentityAgent={}", &agent.socket));
+    ssh.arg("-o")
+        .arg(format!("IdentityAgent={}", &agent.socket));
     ssh.arg("-o").arg("IdentitiesOnly=yes");
     ssh.arg("-o").arg("PubkeyAuthentication=yes");
     ssh.arg("-o").arg("PreferredAuthentications=publickey");
@@ -234,15 +235,12 @@ struct TempAgent {
 impl TempAgent {
     /// Spawn a fresh `ssh-agent` and parse its socket + pid from stdout.
     fn spawn() -> Result<Self, CryError> {
-        let out = Command::new("ssh-agent")
-            .arg("-s")
-            .output()
-            .map_err(|e| {
-                CryError::InvalidFormat(format!(
-                    "Failed to spawn ssh-agent: {e}\n\
+        let out = Command::new("ssh-agent").arg("-s").output().map_err(|e| {
+            CryError::InvalidFormat(format!(
+                "Failed to spawn ssh-agent: {e}\n\
                      Make sure openssh-client is installed (e.g. `apt install openssh-client`)."
-                ))
-            })?;
+            ))
+        })?;
 
         if !out.status.success() {
             return Err(CryError::InvalidFormat(format!(

@@ -7,10 +7,6 @@ use rand::rngs::OsRng;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
-use ssh_key::{
-    LineEnding as SshLineEnding,
-    private::{Ed25519Keypair, KeypairData, PrivateKey},
-};
 use zeroize::Zeroizing;
 
 use crate::crydna::Identity;
@@ -48,8 +44,8 @@ pub struct DeriveArgs {
     pub algo: KeyAlgorithm,
     #[arg(long = "bits", default_value_t = 3072)]
     pub bits: usize,
-    #[arg(long = "passphrase", default_value_t = false)]
-    pub passphrase: bool,
+    #[arg(long = "passphrase", value_name = "PASS")]
+    pub passphrase: Option<String>,
     #[arg(short = 'n', long = "namespace", default_value = "default")]
     pub namespace: String,
     #[arg(short = 'o', long = "output", default_value = "k")]
@@ -102,6 +98,8 @@ pub fn keygen(args: &KeygenArgs, openssh_passphrase: Option<&[u8]>) -> Result<()
                 eprintln!("  ssh public: {}", ssh_pub_path.display());
                 eprintln!("  ssh private: {}", ssh_priv_path.display());
                 eprintln!("  authorized_keys: {auth_line}");
+                eprintln!("  pubkey(base64): {}", id.public_key_base64());
+                eprintln!("  fingerprint: {}", id.fingerprint());
             }
         }
         KeyAlgorithm::Aes256Gcm => {
@@ -136,20 +134,6 @@ pub fn derive(
     openssh_passphrase: Option<&[u8]>,
 ) -> Result<(), CryError> {
     let output = names(&args.output, &args.algo);
-    let mut salt_input = format!("{}|{:?}|cry:derive", args.namespace, args.algo).into_bytes();
-    if let Some(sub) = &args.sub_id {
-        salt_input.extend_from_slice(sub.as_bytes());
-    }
-    let salt = Sha256::digest(&salt_input);
-
-    let mut okm = [0u8; 64];
-    Argon2::new(
-        Algorithm::Argon2id,
-        Version::V0x13,
-        Params::new(65536, 3, 1, Some(64)).unwrap(),
-    )
-    .hash_password_into(passphrase.as_ref(), &salt, &mut okm)
-    .map_err(|e| CryError::Kdf(e.to_string()))?;
 
     match args.algo {
         KeyAlgorithm::Ed25519 => {
@@ -159,10 +143,7 @@ pub fn derive(
                 ensure_writable(&openssh_path(&output.0), args.force)?;
                 ensure_writable(&openssh_pub_path(&output.0), args.force)?;
             }
-            let mut seed = [0u8; 32];
-            seed.copy_from_slice(&okm[..32]);
-            let sk = SigningKey::from_bytes(&seed);
-            let id = Identity { signing_key: sk };
+            let id = Identity::derive(passphrase, &args.namespace, 0, args.sub_id.as_deref())?;
             id.write_private_key_hex_file(&output.0, args.force)?;
             let vk: VerifyingKey = id.verifying_key();
             write_public_key(&output.1.unwrap(), &vk.to_bytes(), args.force)?;
@@ -184,11 +165,23 @@ pub fn derive(
                 eprintln!("  ssh public: {}", ssh_pub_path.display());
                 eprintln!("  ssh private: {}", ssh_priv_path.display());
                 eprintln!("  authorized_keys: {auth_line}");
+                eprintln!("  pubkey(base64): {}", id.public_key_base64());
+                eprintln!("  fingerprint: {}", id.fingerprint());
             }
         }
         KeyAlgorithm::Aes256Gcm => {
             ensure_writable(&output.0, args.force)?;
-            write_private_key(&output.0, &okm[..32], args.force)?;
+            let salt =
+                Sha256::digest(format!("{}|{:?}|cry:derive", args.namespace, args.algo).as_bytes());
+            let mut okm = [0u8; 32];
+            Argon2::new(
+                Algorithm::Argon2id,
+                Version::V0x13,
+                Params::new(65536, 3, 1, Some(32)).unwrap(),
+            )
+            .hash_password_into(passphrase.as_ref(), &salt, &mut okm)
+            .map_err(|e| CryError::Kdf(e.to_string()))?;
+            write_private_key(&output.0, &okm, args.force)?;
         }
         KeyAlgorithm::Rsa => {
             eprintln!(

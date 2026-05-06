@@ -235,8 +235,15 @@ fn main() {
                 Ok(None)
             };
             openssh_pass.and_then(|p| {
-                read_passphrase(None, false)
-                    .and_then(|pass| keygen::derive(&args, &pass, p.as_deref().map(|v| &**v)))
+                let pass = if let Some(raw) = &args.passphrase {
+                    if raw.is_empty() {
+                        return Err(CryError::EmptyPassphrase);
+                    }
+                    Ok(Zeroizing::new(raw.as_bytes().to_vec()))
+                } else {
+                    read_passphrase(None, false)
+                }?;
+                keygen::derive(&args, &pass, p.as_deref().map(|v| &**v))
             })
         }
 

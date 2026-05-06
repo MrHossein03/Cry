@@ -23,6 +23,20 @@ use zeroize::Zeroizing;
 use crate::crydna::Identity;
 use crate::error::CryError;
 
+#[cfg(windows)]
+fn try_start_windows_ssh_agent_service() {
+    let _ = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Service -Name ssh-agent -ErrorAction SilentlyContinue",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 // ---------------------------------------------------------------------------
 // CLI arguments
 // ---------------------------------------------------------------------------
@@ -43,7 +57,12 @@ pub struct SshArgs {
     /// Derivation namespace (extra context/salt domain).
     ///
     /// Same passphrase + same namespace => same deterministic key.
-    #[arg(short = 'n', long = "namespace", value_name = "NAME", default_value = "default")]
+    #[arg(
+        short = 'n',
+        long = "namespace",
+        value_name = "NAME",
+        default_value = "default"
+    )]
     pub namespace: String,
 
     /// Optional SSH port forwarded as `-p PORT`.
@@ -87,16 +106,25 @@ impl TempAgent {
                 let pid = extract_var(&stdout, "SSH_AGENT_PID").ok_or_else(|| {
                     CryError::InvalidFormat("Could not parse SSH_AGENT_PID".into())
                 })?;
-                return Ok(Self { socket, pid: Some(pid), owned: true });
+                return Ok(Self {
+                    socket,
+                    pid: Some(pid),
+                    owned: true,
+                });
             }
 
             #[cfg(windows)]
             {
+                try_start_windows_ssh_agent_service();
                 // Windows OpenSSH default agent endpoint (named pipe).
                 // This path is used by the built-in `ssh-agent` service.
                 let socket = std::env::var("SSH_AUTH_SOCK")
                     .unwrap_or_else(|_| r"\\.\pipe\openssh-ssh-agent".to_string());
-                return Ok(Self { socket, pid: None, owned: false });
+                return Ok(Self {
+                    socket,
+                    pid: None,
+                    owned: false,
+                });
             }
 
             #[cfg(not(windows))]
@@ -110,9 +138,14 @@ impl TempAgent {
 
         #[cfg(windows)]
         {
+            try_start_windows_ssh_agent_service();
             let socket = std::env::var("SSH_AUTH_SOCK")
                 .unwrap_or_else(|_| r"\\.\pipe\openssh-ssh-agent".to_string());
-            return Ok(Self { socket, pid: None, owned: false });
+            return Ok(Self {
+                socket,
+                pid: None,
+                owned: false,
+            });
         }
 
         #[cfg(not(windows))]
@@ -146,7 +179,7 @@ impl TempAgent {
         let output = add.wait_with_output().map_err(CryError::Io)?;
         if !output.status.success() {
             return Err(CryError::InvalidFormat(format!(
-                "ssh-add failed (on Windows ensure OpenSSH ssh-agent service is running): {}",
+                "ssh-add failed: {}\nOn Windows, run PowerShell as Administrator and execute: Get-Service ssh-agent | Set-Service -StartupType Automatic; Start-Service ssh-agent",
                 String::from_utf8_lossy(&output.stderr)
             )));
         }

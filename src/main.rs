@@ -219,10 +219,25 @@ fn main() {
                 .and_then(|p| decrypt_file(&args.plain, &args.cipher, &p, args.force))
         }
 
-        Command::Keygen(args) => keygen::keygen(&args),
+        Command::Keygen(args) => {
+            let openssh_pass = if args.openssh {
+                read_openssh_passphrase().map(Some)
+            } else {
+                Ok(None)
+            };
+            openssh_pass.and_then(|p| keygen::keygen(&args, p.as_deref()))
+        }
 
         Command::Derive(args) => {
-            read_passphrase(None, false).and_then(|pass| keygen::derive(&args, &pass))
+            let openssh_pass = if args.openssh {
+                read_openssh_passphrase().map(Some)
+            } else {
+                Ok(None)
+            };
+            openssh_pass.and_then(|p| {
+                read_passphrase(None, false)
+                    .and_then(|pass| keygen::derive(&args, &pass, p.as_deref()))
+            })
         }
 
         // ── Sign ─────────────────────────────────────────────────────────────

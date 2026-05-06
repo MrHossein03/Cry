@@ -37,6 +37,14 @@ fn try_start_windows_ssh_agent_service() {
         .status();
 }
 
+#[cfg(windows)]
+fn windows_ssh_auth_sock() -> String {
+    match std::env::var("SSH_AUTH_SOCK") {
+        Ok(sock) if sock.starts_with(r"\\.\pipe\") => sock,
+        _ => r"\\.\pipe\openssh-ssh-agent".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI arguments
 // ---------------------------------------------------------------------------
@@ -100,17 +108,22 @@ impl TempAgent {
         if let Ok(out) = out {
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
+                #[cfg(windows)]
+                let socket =
+                    extract_var(&stdout, "SSH_AUTH_SOCK").unwrap_or_else(windows_ssh_auth_sock);
+                #[cfg(not(windows))]
                 let socket = extract_var(&stdout, "SSH_AUTH_SOCK").ok_or_else(|| {
                     CryError::InvalidFormat("Could not parse SSH_AUTH_SOCK".into())
                 })?;
-                let pid = extract_var(&stdout, "SSH_AGENT_PID").ok_or_else(|| {
+
+                #[cfg(windows)]
+                let pid = extract_var(&stdout, "SSH_AGENT_PID");
+                #[cfg(not(windows))]
+                let pid = Some(extract_var(&stdout, "SSH_AGENT_PID").ok_or_else(|| {
                     CryError::InvalidFormat("Could not parse SSH_AGENT_PID".into())
-                })?;
-                return Ok(Self {
-                    socket,
-                    pid: Some(pid),
-                    owned: true,
-                });
+                })?);
+                let owned = pid.is_some();
+                return Ok(Self { socket, pid, owned });
             }
 
             #[cfg(windows)]
@@ -118,8 +131,7 @@ impl TempAgent {
                 try_start_windows_ssh_agent_service();
                 // Windows OpenSSH default agent endpoint (named pipe).
                 // This path is used by the built-in `ssh-agent` service.
-                let socket = std::env::var("SSH_AUTH_SOCK")
-                    .unwrap_or_else(|_| r"\\.\pipe\openssh-ssh-agent".to_string());
+                let socket = windows_ssh_auth_sock();
                 return Ok(Self {
                     socket,
                     pid: None,
@@ -139,8 +151,7 @@ impl TempAgent {
         #[cfg(windows)]
         {
             try_start_windows_ssh_agent_service();
-            let socket = std::env::var("SSH_AUTH_SOCK")
-                .unwrap_or_else(|_| r"\\.\pipe\openssh-ssh-agent".to_string());
+            let socket = windows_ssh_auth_sock();
             return Ok(Self {
                 socket,
                 pid: None,

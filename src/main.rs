@@ -225,7 +225,7 @@ fn main() {
             } else {
                 Ok(None)
             };
-            openssh_pass.and_then(|p| keygen::keygen(&args, p.as_deref()))
+            openssh_pass.and_then(|p| keygen::keygen(&args, p.as_deref().map(|v| &**v)))
         }
 
         Command::Derive(args) => {
@@ -236,7 +236,7 @@ fn main() {
             };
             openssh_pass.and_then(|p| {
                 read_passphrase(None, false)
-                    .and_then(|pass| keygen::derive(&args, &pass, p.as_deref()))
+                    .and_then(|pass| keygen::derive(&args, &pass, p.as_deref().map(|v| &**v)))
             })
         }
 

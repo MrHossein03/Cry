@@ -7,6 +7,10 @@ use rand::rngs::OsRng;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
+use ssh_key::{
+    LineEnding as SshLineEnding,
+    private::{Ed25519Keypair, KeypairData, PrivateKey},
+};
 use zeroize::Zeroizing;
 
 use crate::crydna::Identity;

@@ -11,6 +11,7 @@ mod crydna;
 mod error;
 mod header;
 mod kdf;
+mod keygen;
 mod ssh;
 
 use std::path::{Path, PathBuf};
@@ -19,9 +20,10 @@ use clap::{CommandFactory, Parser};
 use zeroize::Zeroizing;
 
 use cipher::{decrypt_file, encrypt_file};
-use crydna::{Identity, IdentityArgs, PubKeyFormat, SignArgs, VerifyArgs};
+use crydna::{Identity, SignArgs, VerifyArgs};
 use error::CryError;
 use header::Algorithm;
+use keygen::{DeriveArgs, KeygenArgs};
 
 // ---------------------------------------------------------------------------
 // Banner / formatting helpers
@@ -85,12 +87,13 @@ enum Command {
     #[command(name = "decrypt", alias = "-de", alias = "de")]
     Decrypt(DecryptArgs),
 
-    /// Derive and display a deterministic cryptographic identity (CryDNA)
-    ///
-    /// The same passphrase + namespace + version always produces the same
-    /// Ed25519 keypair, on any machine, without storing anything to disk.
-    #[command(name = "identity", alias = "-id", alias = "id")]
-    Identity(IdentityArgs),
+    /// Generate cryptographically secure random keys
+    #[command(name = "keygen")]
+    Keygen(KeygenArgs),
+
+    /// Deterministically derive keys from a passphrase
+    #[command(name = "derive")]
+    Derive(DeriveArgs),
 
     /// Sign a file using a derived CryDNA identity
     #[command(name = "sign")]
@@ -216,97 +219,10 @@ fn main() {
                 .and_then(|p| decrypt_file(&args.plain, &args.cipher, &p, args.force))
         }
 
-        // ── Identity (CryDNA) ─────────────────────────────────────────────────
-        Command::Identity(args) => {
-            let p = &args.params;
+        Command::Keygen(args) => keygen::keygen(&args),
 
-            // Build display header
-            let mut label = format!("namespace={:?}", p.namespace);
-            if p.key_version > 0 {
-                label.push_str(&format!("  version={}", p.key_version));
-            }
-            if let Some(ref sub) = p.sub_id {
-                label.push_str(&format!("  sub={sub:?}"));
-            }
-            eprintln!("  🪪  \x1b[1mCryDNA Identity\x1b[0m  \x1b[2m{label}\x1b[0m");
-            section("⚙", "Algorithm", "Ed25519");
-            section("🔑", "KDF", "Argon2id  (64 MiB · 3 iter · 1 thread)");
-            divider();
-
-            read_passphrase(p.pass_file.as_deref(), false).and_then(|pass| {
-                let id = Identity::derive(
-                    &pass,
-                    &p.namespace,
-                    p.key_version,
-                    p.sub_id.as_deref(),
-                )?;
-                divider();
-
-                // Public key output
-                match args.format {
-                    PubKeyFormat::Hex => {
-                        kv("Public key (hex)", &id.public_key_hex());
-                    }
-                    PubKeyFormat::Base64 => {
-                        kv("Public key (b64)", &id.public_key_base64());
-                    }
-                    PubKeyFormat::All => {
-                        kv("Public key (hex)", &id.public_key_hex());
-                        kv("Public key (b64)", &id.public_key_base64());
-                    }
-                }
-
-                kv("Fingerprint", &id.fingerprint());
-                if args.show_private_key {
-                    kv("Private key (hex)", &id.private_key_hex());
-                } else {
-                    kv("Private key", "\x1b[2m[in memory only — use --show-private-key to print]\x1b[0m");
-                }
-
-                if args.openssh {
-                    let key_pass = read_openssh_passphrase()?;
-                    let key_pass_str = std::str::from_utf8(&key_pass).map_err(|_| {
-                        CryError::InvalidFormat(
-                            "OpenSSH key passphrase must be valid UTF-8".to_string(),
-                        )
-                    })?;
-                    let openssh_key = id.openssh_private_key(key_pass_str, &args.comment)?;
-                    if let Some(path) = args.private_key_out.as_deref() {
-                        let openssh_path = PathBuf::from(format!("{}.openssh_id", path.display()));
-                        if openssh_path.exists() && !args.force {
-                            return Err(CryError::FileExists(openssh_path.display().to_string()));
-                        }
-                        std::fs::write(&openssh_path, &openssh_key)?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            std::fs::set_permissions(
-                                &openssh_path,
-                                std::fs::Permissions::from_mode(0o600),
-                            )?;
-                        }
-                        kv("OpenSSH key file", &openssh_path.display().to_string());
-                    } else {
-                        divider();
-                        eprintln!("  \x1b[2mOpenSSH private key (encrypted):\x1b[0m");
-                        eprintln!();
-                        eprintln!("{openssh_key}");
-                        eprintln!("  \x1b[2mOpenSSH public key line:\x1b[0m");
-                        eprintln!("  {}", id.ssh_authorized_keys_line(&args.comment));
-                        eprintln!();
-                        eprintln!(
-                            "  \x1b[2mAppend the line above to ~/.ssh/authorized_keys on your server.\x1b[0m"
-                        );
-                    }
-                }
-
-                if let Some(path) = args.private_key_out.as_deref() {
-                    id.write_private_key_hex_file(path, args.force)?;
-                    kv("Private key file", &path.display().to_string());
-                }
-
-                Ok(())
-            })
+        Command::Derive(args) => {
+            read_passphrase(None, false).and_then(|pass| keygen::derive(&args, &pass))
         }
 
         // ── Sign ─────────────────────────────────────────────────────────────
@@ -402,11 +318,13 @@ fn main() {
                 "  🔑  \x1b[1mSSH\x1b[0m  {}  \x1b[2m({})\x1b[0m",
                 args.target, ns_label
             );
-            section("⚙", "Key type", "Ed25519 (CryDNA — ephemeral, no disk write)");
-            section("🔑", "KDF", "Argon2id  (64 MiB · 3 iter · 1 thread)");
-            eprintln!(
-                "  \x1b[2mℹ  To add the public key to the server, run:\x1b[0m"
+            section(
+                "⚙",
+                "Key type",
+                "Ed25519 (CryDNA — ephemeral, no disk write)",
             );
+            section("🔑", "KDF", "Argon2id  (64 MiB · 3 iter · 1 thread)");
+            eprintln!("  \x1b[2mℹ  To add the public key to the server, run:\x1b[0m");
             eprintln!(
                 "  \x1b[2m   cry identity -n {} --ssh\x1b[0m",
                 args.namespace

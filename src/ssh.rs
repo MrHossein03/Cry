@@ -169,6 +169,22 @@ impl TempAgent {
     ///
     /// This keeps key material entirely in memory; no temporary files are used.
     fn add_private_key(&self, key_pem: &Zeroizing<String>) -> Result<(), CryError> {
+        #[cfg(windows)]
+        if !self.owned {
+            let mut clear_cmd = Command::new("ssh-add");
+            clear_cmd.arg("-D").env("SSH_AUTH_SOCK", &self.socket);
+            if let Some(pid) = &self.pid {
+                clear_cmd.env("SSH_AGENT_PID", pid);
+            }
+            let cleared = clear_cmd.output().map_err(CryError::Io)?;
+            if !cleared.status.success() {
+                return Err(CryError::InvalidFormat(format!(
+                    "ssh-add -D failed before loading Cry key: {}",
+                    String::from_utf8_lossy(&cleared.stderr)
+                )));
+            }
+        }
+
         let mut add_cmd = Command::new("ssh-add");
         add_cmd.arg("-").env("SSH_AUTH_SOCK", &self.socket);
         if let Some(pid) = &self.pid {
@@ -257,7 +273,6 @@ pub fn run_ssh(args: SshArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), Cry
     ssh.arg("-F").arg("/dev/null");
     ssh.arg("-o")
         .arg(format!("IdentityAgent={}", &agent.socket));
-    ssh.arg("-o").arg("IdentitiesOnly=yes");
     ssh.arg("-o").arg("PubkeyAuthentication=yes");
     ssh.arg("-o").arg("PasswordAuthentication=no");
     ssh.arg("-o").arg("KbdInteractiveAuthentication=no");

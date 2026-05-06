@@ -7,6 +7,10 @@ use rand::rngs::OsRng;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
+use ssh_key::{
+    LineEnding as SshLineEnding,
+    private::{Ed25519Keypair, KeypairData, PrivateKey},
+};
 use zeroize::Zeroizing;
 
 use crate::error::CryError;
@@ -35,7 +39,6 @@ pub struct KeygenArgs {
     /// Comment embedded in the SSH key line (used with --ssh)
     #[arg(long = "comment", default_value = "CryDNA", value_name = "TEXT")]
     pub comment: String,
-
 }
 
 #[derive(clap::Args, Debug)]
@@ -62,12 +65,15 @@ pub struct DeriveArgs {
     pub comment: String,
 }
 
-pub fn keygen(args: &KeygenArgs) -> Result<(), CryError> {
+pub fn keygen(args: &KeygenArgs, openssh_passphrase: Option<&[u8]>) -> Result<(), CryError> {
     let output = names(&args.output, &args.algo);
     match args.algo {
         KeyAlgorithm::Ed25519 => {
             ensure_writable(&output.0, args.force)?;
             ensure_writable(output.1.as_ref().unwrap(), args.force)?;
+            if args.openssh {
+                ensure_writable(&openssh_path(&output.0), args.force)?;
+            }
             let sk = SigningKey::generate(&mut OsRng);
             write_private_key(&output.0, &sk.to_bytes(), args.force)?;
             write_public_key(
@@ -75,6 +81,17 @@ pub fn keygen(args: &KeygenArgs) -> Result<(), CryError> {
                 &sk.verifying_key().to_bytes(),
                 args.force,
             )?;
+            if args.openssh {
+                let passphrase = openssh_passphrase
+                    .ok_or_else(|| CryError::InvalidFormat("missing OpenSSH passphrase".into()))?;
+                write_openssh_private_key(
+                    &openssh_path(&output.0),
+                    &sk,
+                    passphrase,
+                    &args.comment,
+                    args.force,
+                )?;
+            }
         }
         KeyAlgorithm::Aes256Gcm => {
             ensure_writable(&output.0, args.force)?;
@@ -102,7 +119,11 @@ pub fn keygen(args: &KeygenArgs) -> Result<(), CryError> {
     Ok(())
 }
 
-pub fn derive(args: &DeriveArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), CryError> {
+pub fn derive(
+    args: &DeriveArgs,
+    passphrase: &Zeroizing<Vec<u8>>,
+    openssh_passphrase: Option<&[u8]>,
+) -> Result<(), CryError> {
     let output = names(&args.output, &args.algo);
     let mut salt_input = format!("{}|{:?}|cry:derive", args.namespace, args.algo).into_bytes();
     if let Some(sub) = &args.sub_id {
@@ -123,12 +144,26 @@ pub fn derive(args: &DeriveArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), 
         KeyAlgorithm::Ed25519 => {
             ensure_writable(&output.0, args.force)?;
             ensure_writable(output.1.as_ref().unwrap(), args.force)?;
+            if args.openssh {
+                ensure_writable(&openssh_path(&output.0), args.force)?;
+            }
             let mut seed = [0u8; 32];
             seed.copy_from_slice(&okm[..32]);
             let sk = SigningKey::from_bytes(&seed);
             write_private_key(&output.0, &sk.to_bytes(), args.force)?;
             let vk: VerifyingKey = sk.verifying_key();
             write_public_key(&output.1.unwrap(), &vk.to_bytes(), args.force)?;
+            if args.openssh {
+                let ssh_pass = openssh_passphrase
+                    .ok_or_else(|| CryError::InvalidFormat("missing OpenSSH passphrase".into()))?;
+                write_openssh_private_key(
+                    &openssh_path(&output.0),
+                    &sk,
+                    ssh_pass,
+                    &args.comment,
+                    args.force,
+                )?;
+            }
         }
         KeyAlgorithm::Aes256Gcm => {
             ensure_writable(&output.0, args.force)?;
@@ -172,5 +207,33 @@ fn write_private_key(path: &Path, bytes: &[u8], force: bool) -> Result<(), CryEr
 fn write_public_key(path: &Path, bytes: &[u8], force: bool) -> Result<(), CryError> {
     ensure_writable(path, force)?;
     std::fs::write(path, hex::encode(bytes))?;
+    Ok(())
+}
+
+fn openssh_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.openssh_id", path.display()))
+}
+
+fn write_openssh_private_key(
+    path: &Path,
+    signing_key: &SigningKey,
+    passphrase: &[u8],
+    comment: &str,
+    force: bool,
+) -> Result<(), CryError> {
+    ensure_writable(path, force)?;
+    let passphrase_str = std::str::from_utf8(passphrase)
+        .map_err(|_| CryError::InvalidFormat("OpenSSH passphrase must be valid UTF-8".into()))?;
+    let keypair = Ed25519Keypair::from_bytes(&signing_key.to_keypair_bytes())
+        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key build failed: {e}")))?;
+    let private = PrivateKey::new(KeypairData::Ed25519(keypair), comment)
+        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key build failed: {e}")))?;
+    let mut rng = rand::thread_rng();
+    let pem = private
+        .encrypt(&mut rng, passphrase_str)
+        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key encryption failed: {e}")))?
+        .to_openssh(SshLineEnding::LF)
+        .map_err(|e| CryError::InvalidFormat(format!("OpenSSH key encode failed: {e}")))?;
+    std::fs::write(path, pem.to_string())?;
     Ok(())
 }

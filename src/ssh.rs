@@ -251,9 +251,17 @@ pub fn run_ssh(args: SshArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), Cry
     if let Some(pid) = &agent.pid {
         ssh.env("SSH_AGENT_PID", pid);
     }
+    #[cfg(windows)]
+    ssh.arg("-F").arg("NUL");
+    #[cfg(not(windows))]
+    ssh.arg("-F").arg("/dev/null");
     ssh.arg("-o")
         .arg(format!("IdentityAgent={}", &agent.socket));
     ssh.arg("-o").arg("IdentitiesOnly=yes");
+    ssh.arg("-o").arg("IdentityFile=none");
+    ssh.arg("-o").arg("PubkeyAuthentication=yes");
+    ssh.arg("-o").arg("PasswordAuthentication=no");
+    ssh.arg("-o").arg("KbdInteractiveAuthentication=no");
 
     if let Some(port) = args.port {
         ssh.arg("-p").arg(port.to_string());

@@ -9,6 +9,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::crydna::Identity;
 use crate::error::CryError;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -35,7 +36,6 @@ pub struct KeygenArgs {
     /// Comment embedded in the SSH key line (used with --ssh)
     #[arg(long = "comment", default_value = "CryDNA", value_name = "TEXT")]
     pub comment: String,
-
 }
 
 #[derive(clap::Args, Debug)]
@@ -62,19 +62,43 @@ pub struct DeriveArgs {
     pub comment: String,
 }
 
-pub fn keygen(args: &KeygenArgs) -> Result<(), CryError> {
+pub fn keygen(args: &KeygenArgs, openssh_passphrase: Option<&[u8]>) -> Result<(), CryError> {
     let output = names(&args.output, &args.algo);
     match args.algo {
         KeyAlgorithm::Ed25519 => {
             ensure_writable(&output.0, args.force)?;
             ensure_writable(output.1.as_ref().unwrap(), args.force)?;
+            if args.openssh {
+                ensure_writable(&openssh_path(&output.0), args.force)?;
+                ensure_writable(&openssh_pub_path(&output.0), args.force)?;
+            }
             let sk = SigningKey::generate(&mut OsRng);
-            write_private_key(&output.0, &sk.to_bytes(), args.force)?;
+            let id = Identity { signing_key: sk };
+            id.write_private_key_hex_file(&output.0, args.force)?;
             write_public_key(
                 &output.1.unwrap(),
-                &sk.verifying_key().to_bytes(),
+                &id.verifying_key().to_bytes(),
                 args.force,
             )?;
+            if args.openssh {
+                let passphrase = openssh_passphrase
+                    .ok_or_else(|| CryError::InvalidFormat("missing OpenSSH passphrase".into()))?;
+                let ssh_priv_path = openssh_path(&output.0);
+                write_openssh_private_key(
+                    &ssh_priv_path,
+                    &id,
+                    passphrase,
+                    &args.comment,
+                    args.force,
+                )?;
+                let auth_line = id.ssh_authorized_keys_line(&args.comment);
+                let ssh_pub_path = openssh_pub_path(&output.0);
+                std::fs::write(&ssh_pub_path, format!("{auth_line}\n"))?;
+                eprintln!("  algorithm: ed25519");
+                eprintln!("  ssh public: {}", ssh_pub_path.display());
+                eprintln!("  ssh private: {}", ssh_priv_path.display());
+                eprintln!("  authorized_keys: {auth_line}");
+            }
         }
         KeyAlgorithm::Aes256Gcm => {
             ensure_writable(&output.0, args.force)?;
@@ -102,7 +126,11 @@ pub fn keygen(args: &KeygenArgs) -> Result<(), CryError> {
     Ok(())
 }
 
-pub fn derive(args: &DeriveArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), CryError> {
+pub fn derive(
+    args: &DeriveArgs,
+    passphrase: &Zeroizing<Vec<u8>>,
+    openssh_passphrase: Option<&[u8]>,
+) -> Result<(), CryError> {
     let output = names(&args.output, &args.algo);
     let mut salt_input = format!("{}|{:?}|cry:derive", args.namespace, args.algo).into_bytes();
     if let Some(sub) = &args.sub_id {
@@ -123,12 +151,36 @@ pub fn derive(args: &DeriveArgs, passphrase: &Zeroizing<Vec<u8>>) -> Result<(), 
         KeyAlgorithm::Ed25519 => {
             ensure_writable(&output.0, args.force)?;
             ensure_writable(output.1.as_ref().unwrap(), args.force)?;
+            if args.openssh {
+                ensure_writable(&openssh_path(&output.0), args.force)?;
+                ensure_writable(&openssh_pub_path(&output.0), args.force)?;
+            }
             let mut seed = [0u8; 32];
             seed.copy_from_slice(&okm[..32]);
             let sk = SigningKey::from_bytes(&seed);
-            write_private_key(&output.0, &sk.to_bytes(), args.force)?;
-            let vk: VerifyingKey = sk.verifying_key();
+            let id = Identity { signing_key: sk };
+            id.write_private_key_hex_file(&output.0, args.force)?;
+            let vk: VerifyingKey = id.verifying_key();
             write_public_key(&output.1.unwrap(), &vk.to_bytes(), args.force)?;
+            if args.openssh {
+                let ssh_pass = openssh_passphrase
+                    .ok_or_else(|| CryError::InvalidFormat("missing OpenSSH passphrase".into()))?;
+                let ssh_priv_path = openssh_path(&output.0);
+                write_openssh_private_key(
+                    &ssh_priv_path,
+                    &id,
+                    ssh_pass,
+                    &args.comment,
+                    args.force,
+                )?;
+                let auth_line = id.ssh_authorized_keys_line(&args.comment);
+                let ssh_pub_path = openssh_pub_path(&output.0);
+                std::fs::write(&ssh_pub_path, format!("{auth_line}\n"))?;
+                eprintln!("  algorithm: ed25519");
+                eprintln!("  ssh public: {}", ssh_pub_path.display());
+                eprintln!("  ssh private: {}", ssh_priv_path.display());
+                eprintln!("  authorized_keys: {auth_line}");
+            }
         }
         KeyAlgorithm::Aes256Gcm => {
             ensure_writable(&output.0, args.force)?;
@@ -172,5 +224,27 @@ fn write_private_key(path: &Path, bytes: &[u8], force: bool) -> Result<(), CryEr
 fn write_public_key(path: &Path, bytes: &[u8], force: bool) -> Result<(), CryError> {
     ensure_writable(path, force)?;
     std::fs::write(path, hex::encode(bytes))?;
+    Ok(())
+}
+
+fn openssh_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.openssh_id", path.display()))
+}
+fn openssh_pub_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.openssh_pub", path.display()))
+}
+
+fn write_openssh_private_key(
+    path: &Path,
+    identity: &Identity,
+    passphrase: &[u8],
+    comment: &str,
+    force: bool,
+) -> Result<(), CryError> {
+    ensure_writable(path, force)?;
+    let passphrase_str = std::str::from_utf8(passphrase)
+        .map_err(|_| CryError::InvalidFormat("OpenSSH passphrase must be valid UTF-8".into()))?;
+    let pem = identity.openssh_private_key(passphrase_str, comment)?;
+    std::fs::write(path, pem)?;
     Ok(())
 }

@@ -62,6 +62,7 @@ pub struct DeriveArgs {
     pub comment: String,
 }
 
+/// Generate fresh random key material and write it to standardized v0.6 filenames.
 pub fn keygen(args: &KeygenArgs, openssh_passphrase: Option<&[u8]>) -> Result<(), CryError> {
     let output = names(&args.output, &args.algo);
     match args.algo {
@@ -128,6 +129,9 @@ pub fn keygen(args: &KeygenArgs, openssh_passphrase: Option<&[u8]>) -> Result<()
     Ok(())
 }
 
+/// Deterministically derive key material from passphrase + namespace context.
+///
+/// This is reproducible by design: the same inputs always reproduce the same key.
 pub fn derive(
     args: &DeriveArgs,
     passphrase: &Zeroizing<Vec<u8>>,
@@ -202,6 +206,9 @@ fn ensure_writable(path: &Path, force: bool) -> Result<(), CryError> {
     Ok(())
 }
 
+/// Build standardized v0.6 output names:
+/// - private: <base>.cry_id
+/// - public:  <base>.cry_pub_id (when applicable)
 fn names(base: &Path, algo: &KeyAlgorithm) -> (PathBuf, Option<PathBuf>) {
     let priv_path = PathBuf::from(format!("{}.cry_id", base.display()));
     match algo {

@@ -1,121 +1,44 @@
-# CryDNA Identity + SSH Guide
+# cry v0.6: Derive, Keygen, and SSH Guide
 
-This guide explains how CryDNA identity derivation works, why keys can differ
-even with the same passphrase, and how to use CryDNA output safely with SSH.
+This guide explains deterministic derivation, random key generation, and ephemeral SSH authentication in `cry` v0.6.
 
----
+## 1) Deterministic derivation model (`cry derive`)
 
-## 1) Deterministic identity inputs
-
-CryDNA key derivation depends on the full identity tuple:
+Deterministic derivation depends on this tuple:
 
 1. passphrase
 2. namespace (`--namespace`)
-3. key version (`--key-version`)
+3. key version (used in SSH/signing flows)
 4. sub-identity (`--sub-id`, optional)
 
-The same tuple always yields the same keypair. Any change to any element yields
-a different keypair.
+Same tuple => same key. Any change => different key.
 
-### Example
+## 2) Random key generation (`cry keygen`)
 
-- `cry identity` uses default namespace `default`
-- `cry identity -n work` uses namespace `work`
+`cry keygen` generates fresh random keys each run:
 
-These produce different keys by design.
+- `ed25519` => `<base>.cry_id` + `<base>.cry_pub_id`
+- `rsa` => `<base>.cry_id` + `<base>.cry_pub_id`
+- `aes256gcm` => `<base>.cry_id`
 
----
+Use `--force` to overwrite.
 
-## 2) Output modes: public vs private
+## 3) SSH with ephemeral keys (`cry ssh`)
 
-`cry identity` prints:
+`cry ssh` derives an Ed25519 key from your passphrase context and uses it for SSH without long-term key file management.
 
-- public key (hex/base64)
-- fingerprint
-- optional SSH public line (`--ssh`)
-- encrypted OpenSSH private key + public line (`--openssh`)
-- optional private key files via `--private-key-out <FILE>`
-
-By default it does not print private key material.
-
-If you pass `--show-private-key`, CryDNA prints the raw 32-byte Ed25519 private
-key as lowercase hex.
-
-> Important: this is raw secret key material, **not** an OpenSSH private key
-> file (`OPENSSH PRIVATE KEY` block).
-
----
-
-## 3) Recommended SSH setup
-
-### Server
-
-1. Run:
+Examples:
 
 ```bash
-cry identity -n work --ssh
-# or generate full OpenSSH keypair output:
-cry identity -n work --openssh
+cry ssh user@host
+cry ssh user@host -n work --key-version 2
+cry ssh user@host --pass-file /run/secrets/cry_pass
+cry ssh user@host -- -v -L 8080:localhost:8080
 ```
 
-2. Copy printed line:
+## 4) Security reminders
 
-```text
-ssh-ed25519 AAAA... comment
-```
-
-3. Append it to server:
-
-```bash
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-echo 'ssh-ed25519 AAAA... comment' >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-```
-
-### Client
-
-If you use `--openssh`, Cry prints an encrypted OpenSSH private key block and
-matching public key line by default.
-
-If you also pass `--private-key-out <FILE>`, Cry writes files directly:
-
-- `<FILE>` → raw CryDNA private key hex
-- `<FILE>.openssh_id` → encrypted OpenSSH private key PEM
-
-Use `--force` to overwrite existing files.
-
-You can also use a standard OpenSSH private key file for authentication:
-
-```bash
-ssh -i ~/.ssh/id_ed25519 user@server
-```
-
-`--show-private-key` output is raw hex, not an OpenSSH private key file.
-
----
-
-## 4) Troubleshooting
-
-### “Same passphrase, different keys”
-
-Check:
-
-- namespace mismatch (`default` vs `work`)
-- key version mismatch (`--key-version`)
-- sub-id mismatch (`--sub-id`)
-- accidental passphrase typo/spacing/case mismatch
-
-### “I can’t SSH using printed private key hex”
-
-Expected. OpenSSH expects private key file formats, not raw hex scalars.
-
----
-
-## 5) Security checklist
-
-- Avoid `--show-private-key` unless necessary.
-- Never share printed private key hex in chat/screenshots/logs.
-- Prefer dedicated identities per role (`--namespace work`, `--namespace ci`).
-- Rotate with `--key-version` if key material may have been exposed.
-- Keep passphrase high-entropy and unique.
+- Deterministic derivation is reproducible, not magically stronger than passphrase quality.
+- Random keys avoid passphrase-derived reproducibility risks.
+- Prefer high-entropy passphrases and environment-specific namespaces.
+- Ephemeral SSH auth reduces disk persistence of private key material.
